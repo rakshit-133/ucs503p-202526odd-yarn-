@@ -1,115 +1,90 @@
-#!/usr/bin/env python3
-"""
-analyzer.py
----------------------------------
-Accepts user-input Python code, summarizes it using an Abstract Syntax Tree (AST),
-builds a graph model with NetworkX, and generates a logic-based flowchart with Graphviz.
-This file contains the core analysis logic to be used by the FastAPI server.
-"""
+# backend/analyzer.py
 
 import ast
-import sys
+import os
+from io import BytesIO
 
+# --- Third-party libraries ---
 try:
     import networkx as nx
     from graphviz import Digraph
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from langchain.prompts import PromptTemplate
+    from langchain.chains import LLMChain
 except ImportError as e:
-    print(f"Error: A required library is not installed ({e}).")
-    print("Please install the necessary libraries to proceed.")
-    print("\n    pip install networkx graphviz\n")
-    sys.exit(1)
+    print(f"Error: A required library is not installed ({e}). Please run:")
+    print("pip install networkx graphviz langchain langchain-google-genai")
+    exit(1)
 
+# --- AI Summarization ---
+
+# IMPORTANT: Set your Google AI API key here or as an environment variable
+ 
+
+def generate_ai_summary(code_text: str) -> str:
+    """
+    Generates a natural language summary of the code's purpose using Google's Gemini model.
+    """
+    os.environ["GOOGLE_API_KEY"] = "AIzaSyBmW64fAG6rW4CTpIXlZHoMdvpXOXCuYYc"
+    if not os.getenv("GOOGLE_API_KEY"):
+        return "Error: GOOGLE_API_KEY is not set. Cannot generate AI summary."
+
+    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.4)
+    prompt_template = """
+    You are an expert programmer. Analyze the following Python code and provide a concise, plain-text summary.
+    Explain the overall purpose of the code, what each function or class does, and the main logic flow.
+
+    Code:
+    ```{code}```
+
+    Summary:
+    """
+    prompt = PromptTemplate(template=prompt_template, input_variables=["code"])
+    chain = LLMChain(llm=llm, prompt=prompt)
+
+    try:
+        response = chain.invoke({"code": code_text})
+        return response.get('text', 'Failed to get summary from AI response.')
+    except Exception as e:
+        return f"Could not generate AI summary: {e}"
+
+# --- Code Structure and Flowchart Logic ---
 
 class CodeAnalyzer(ast.NodeVisitor):
     """
-    Traverses the AST to extract detailed information about code structure.
+    Traverses the AST to extract detailed information for the flowchart.
     """
     def __init__(self):
-        self.structure = {
-            "imports": [],
-            "functions": {},
-            "classes": {},
-            "globals": []
-        }
-
-    def visit_Import(self, node):
-        for alias in node.names:
-            self.structure["imports"].append(alias.name)
-        self.generic_visit(node)
-
-    def visit_ImportFrom(self, node):
-        module_name = node.module or ''
-        for alias in node.names:
-            self.structure["imports"].append(f"{module_name}.{alias.name}")
-        self.generic_visit(node)
+        self.structure = {"functions": {}}
 
     def visit_FunctionDef(self, node):
         args = [a.arg for a in node.args.args]
         flow = []
         for body_item in node.body:
             if isinstance(body_item, ast.If):
-                try:
-                    condition = ast.unparse(body_item.test)
-                except AttributeError:
-                    condition = "condition"
-                flow.append(f"Decision: '{condition}'")
-            elif isinstance(body_item, (ast.For, ast.While)):
-                flow.append("Loop")
+                condition = ast.unparse(body_item.test)
+                flow.append(f"Decision: if {condition}")
+            elif isinstance(body_item, ast.For):
+                target = ast.unparse(body_item.target)
+                iterator = ast.unparse(body_item.iter)
+                flow.append(f"Loop: for {target} in {iterator}")
+            elif isinstance(body_item, ast.While):
+                condition = ast.unparse(body_item.test)
+                flow.append(f"Loop: while {condition}")
             elif isinstance(body_item, ast.Return):
-                flow.append("Return")
+                if body_item.value:
+                    value = ast.unparse(body_item.value)
+                    flow.append(f"Return {value}")
+                else:
+                    flow.append("Return")
         self.structure["functions"][node.name] = {"args": args, "flow": flow}
         self.generic_visit(node)
 
-    def visit_ClassDef(self, node):
-        methods = [n.name for n in node.body if isinstance(n, ast.FunctionDef)]
-        self.structure["classes"][node.name] = {"methods": methods}
-        self.generic_visit(node)
-        
-    def visit_Assign(self, node):
-        for target in node.targets:
-            if isinstance(target, ast.Name):
-                self.structure["globals"].append(target.id)
-        self.generic_visit(node)
-
-
-def generate_detailed_summary(structure):
-    """Creates a rich, human-readable summary from the structured data."""
-    summary = []
-    if not any(structure.values()):
-        return "No recognizable Python structures found in the code."
-    if structure["imports"]:
-        summary.append("Imports:")
-        for imp in sorted(list(set(structure["imports"]))):
-            summary.append(f"  - {imp}")
-    if structure["classes"]:
-        summary.append("\nClasses:")
-        for name, details in structure["classes"].items():
-            summary.append(f"  - Class '{name}':")
-            if details["methods"]:
-                summary.append(f"    - Methods: {', '.join(details['methods'])}")
-    if structure["functions"]:
-        summary.append("\nFunctions:")
-        for name, details in structure["functions"].items():
-            summary.append(f"  - Function '{name}':")
-            summary.append(f"    - Arguments: {', '.join(details['args']) if details['args'] else 'None'}")
-            if details['flow']:
-                summary.append(f"    - Contains: {', '.join(details['flow'])}")
-    if structure["globals"]:
-        summary.append("\nGlobal Variables:")
-        for var in sorted(list(set(structure["globals"]))):
-            summary.append(f"  - {var}")
-    return "\n".join(summary)
-
-
 def build_graph_model(structure):
     """
-    Builds a NetworkX DiGraph model from the code structure.
+    Builds a NetworkX DiGraph model from the extracted code structure.
     """
     G = nx.DiGraph()
-    for name, details in structure.get('classes', {}).items():
-        node_id = f"class_{name}"
-        label = f"Class: {name}\nMethods: {', '.join(details['methods'])}"
-        G.add_node(node_id, label=label, shape='folder', subgraph='cluster_classes')
     for name, details in structure.get('functions', {}).items():
         subgraph_name = f'cluster_func_{name}'
         func_start_id = f"func_{name}_start"
@@ -118,14 +93,14 @@ def build_graph_model(structure):
         flow = details.get('flow', [])
         if not flow:
             empty_node_id = f"func_{name}_empty"
-            G.add_node(empty_node_id, label='No control flow', shape='plaintext', subgraph=subgraph_name)
+            G.add_node(empty_node_id, label='No operations', shape='plaintext', subgraph=subgraph_name)
             G.add_edge(last_node_id, empty_node_id)
             last_node_id = empty_node_id
         else:
             for i, step in enumerate(flow):
                 step_id = f"func_{name}_step_{i}"
                 if step.startswith("Decision"):
-                    G.add_node(step_id, label=step, shape='diamond', fillcolor='khaki', subgraph=subgraph_name)
+                    G.add_node(step_id, label=step.replace("Decision: ", ""), shape='diamond', fillcolor='khaki', subgraph=subgraph_name)
                 else:
                     G.add_node(step_id, label=step, shape='box', subgraph=subgraph_name)
                 G.add_edge(last_node_id, step_id)
@@ -135,10 +110,9 @@ def build_graph_model(structure):
         G.add_edge(last_node_id, func_end_id)
     return G
 
-
 def create_logic_flowchart(graph):
     """
-    Creates a Graphviz flowchart from a NetworkX graph model and returns the Digraph object.
+    Creates a Graphviz flowchart from a NetworkX graph model.
     """
     dot = Digraph('CodeFlow', format='png')
     dot.attr('node', style='rounded,filled', fillcolor='white')
@@ -146,15 +120,11 @@ def create_logic_flowchart(graph):
     dot.attr(fontname="Helvetica")
     subgraph_clusters = {}
     if not graph.nodes:
-        dot.node("main", "No functions or classes found to map.")
+        dot.node("main", "No functions found to map.")
     for node_id, attrs in graph.nodes(data=True):
         subgraph_name = attrs.get('subgraph')
         if subgraph_name and subgraph_name not in subgraph_clusters:
-            if subgraph_name == 'cluster_classes':
-                cluster = Digraph(subgraph_name)
-                cluster.attr(label='Classes', style='filled', color='lightgrey')
-                subgraph_clusters[subgraph_name] = cluster
-            elif subgraph_name.startswith('cluster_func'):
+            if subgraph_name.startswith('cluster_func'):
                 cluster = Digraph(subgraph_name)
                 func_name = attrs.get('func_name', '')
                 func_args = attrs.get('func_args', [])
@@ -168,4 +138,3 @@ def create_logic_flowchart(graph):
     for u, v in graph.edges():
         dot.edge(u, v)
     return dot
-
