@@ -1,5 +1,3 @@
-# backend/main.py
-
 import base64
 from io import BytesIO
 from fastapi import FastAPI
@@ -13,16 +11,12 @@ from analyzer import generate_ai_summary, CodeAnalyzer, build_graph_model, creat
 app = FastAPI()
 
 # --- CORS Configuration ---
-# This block fixes the "blocked by CORS policy" error.
-# In backend/main.py
-
 origins = [
-    "http://localhost:5176", # Add this new line
+    "http://localhost:5176",
     "http://localhost:5173",
     "http://localhost:3000",
 ]
 
-# ... (the rest of the middleware code)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -42,7 +36,11 @@ class AnalysisResult(BaseModel):
 
 # --- API Endpoint ---
 @app.post("/analyze", response_model=AnalysisResult)
-async def analyze_code_endpoint(payload: CodePayload):
+def analyze_code_endpoint(payload: CodePayload):
+    """
+    Analyzes a piece of Python code to generate a summary and a flowchart.
+    This is a synchronous endpoint because it performs CPU/IO-bound tasks.
+    """
     try:
         # 1. Generate the AI-powered natural language summary
         summary = generate_ai_summary(payload.code)
@@ -56,12 +54,21 @@ async def analyze_code_endpoint(payload: CodePayload):
         graph_model = build_graph_model(code_structure)
         dot_obj = create_logic_flowchart(graph_model)
         
+        if dot_obj is None:
+             raise ValueError("Failed to generate flowchart object from the graph model.")
+        
         # 3. Convert the flowchart object to a Base64 image string
-        img_buffer = BytesIO(dot_obj.pipe(format='png'))
+        png_data = dot_obj.pipe(format='png')
+        if not png_data:
+            raise RuntimeError("Graphviz returned empty data. Is it installed and in your system's PATH?")
+            
+        img_buffer = BytesIO(png_data)
         img_base64 = base64.b64encode(img_buffer.getvalue()).decode("utf-8")
         
         # 4. Return the successful result
         return AnalysisResult(summary=summary, flowchart_base64=img_base64, error=None)
 
-    except SyntaxError as e:
-        return AnalysisResult(summary="", flowchart_base64=None, error=f"Syntax Error in provided code: {e}")
+    except Exception as e:
+        # Catch any error during the process (Syntax, Network, Graphviz, etc.)
+        # and return a structured error message.
+        return AnalysisResult(summary="", flowchart_base64=None, error=f"An unexpected error occurred: {e}")
