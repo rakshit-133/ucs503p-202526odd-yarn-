@@ -3,6 +3,7 @@ from io import BytesIO
 from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+import os
 
 # Import all the necessary functions and classes from your analyzer script
 from analyzer import generate_ai_summary, CodeAnalyzer, build_graph_model, create_logic_flowchart, ast
@@ -11,10 +12,13 @@ from analyzer import generate_ai_summary, CodeAnalyzer, build_graph_model, creat
 app = FastAPI()
 
 # --- CORS Configuration ---
+frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
+
 origins = [
     "http://localhost:5176",
     "http://localhost:5173",
     "http://localhost:3000",
+    frontend_url  # This adds your live URL
 ]
 
 app.add_middleware(
