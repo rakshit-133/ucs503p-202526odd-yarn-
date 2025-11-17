@@ -19,9 +19,10 @@ function App() {
 
 
     try {
-      const response = await axios.post(`${API_URL}/analyze`, {
-        code: code,
-      });
+      const response = await axios.post(`${API_URL}/analyze`, 
+        { code: code},
+      { timeout : 90000 }
+    );
 
       if (response.data.error) {
         setError(response.data.error);
